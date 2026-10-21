@@ -6,11 +6,18 @@
     <title>Gemini Smartwatch Notifier</title>
     <style>
         body { font-family: Arial, sans-serif; padding: 20px; max-width: 500px; margin: auto; background: #f9f9f9; }
-        input, select, textarea, button { width: 100%; margin-bottom: 12px; padding: 12px; box-sizing: border-box; border-radius: 6px; border: 1px solid #ccc; font-size: 15px; }
+        input[type="password"], select, textarea, button { width: 100%; margin-bottom: 12px; padding: 12px; box-sizing: border-box; border-radius: 6px; border: 1px solid #ccc; font-size: 15px; }
         button { background-color: #007BFF; color: white; border: none; cursor: pointer; font-weight: bold; }
         button:active { background-color: #0056b3; }
         .secondary-btn { background-color: #28a745; }
         .util-btn { background-color: #6c757d; font-size: 13px; padding: 8px; }
+        
+        /* Camera & Upload Buttons UI */
+        .file-btn-container { display: flex; gap: 10px; margin-bottom: 5px; }
+        .file-btn { flex: 1; background-color: #6c757d; color: white; padding: 12px; text-align: center; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px; }
+        .file-btn:active { background-color: #5a6268; }
+        #fileLabel { font-size: 13px; color: #555; margin-bottom: 12px; font-style: italic; }
+
         #status { color: #0056b3; font-weight: bold; margin-bottom: 10px; }
         #debugLog { background: #1e1e1e; color: #00ff00; padding: 10px; border-radius: 6px; font-family: monospace; font-size: 12px; max-height: 220px; overflow-y: auto; white-space: pre-wrap; }
     </style>
@@ -19,14 +26,12 @@
 
     <h2>Ask Gemini (Smartwatch)</h2>
     
-    <!-- Save API Key in phone's local storage -->
     <input type="password" id="apiKeyInput" placeholder="Paste your AIzaSy... API Key here">
     <button class="secondary-btn" onclick="saveApiKey()">Save API Key on Phone</button>
 
-    <!-- Model Selector -->
     <label for="modelSelect" style="font-size: 14px; font-weight: bold;">Select Model:</label>
     <select id="modelSelect">
-        <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview (Best for Software Modeling)</option>
+        <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview (Best for Diagrams/Code)</option>
         <option value="gemini-3.8-flash">Gemini 3.8 Flash (Faster + Higher Free Limits)</option>
         <option value="gemini-3.5-flash">Gemini 3.5 Flash (Fallback)</option>
     </select>
@@ -34,7 +39,17 @@
     <button onclick="requestNotificationPermission()">1. Enable Notifications</button>
 
     <textarea id="promptText" rows="4" placeholder="Type your question here..."></textarea>
-    <input type="file" id="imageFile" accept="image/*">
+    
+    <!-- Camera and File Upload UI -->
+    <div class="file-btn-container">
+        <label for="cameraFile" class="file-btn">📷 Take Photo</label>
+        <input type="file" id="cameraFile" accept="image/*" capture="environment" style="display: none;" onchange="updateFileName(this)">
+        
+        <label for="imageFile" class="file-btn">📁 Upload Image</label>
+        <input type="file" id="imageFile" accept="image/*" style="display: none;" onchange="updateFileName(this)">
+    </div>
+    <div id="fileLabel">No image selected</div>
+
     <button onclick="sendToGemini()">2. Send to Gemini</button>
     
     <button class="util-btn" onclick="checkAvailableModels()">Check Available Models for My Key</button>
@@ -45,7 +60,6 @@
     <div id="debugLog">Logs will appear here...</div>
 
     <script>
-        // On-screen logger for mobile debugging
         function log(msg) {
             const debugDiv = document.getElementById('debugLog');
             const time = new Date().toLocaleTimeString();
@@ -54,105 +68,94 @@
             console.log(msg);
         }
 
-        // Load saved API key on startup
         window.onload = () => {
             const savedKey = localStorage.getItem('gemini_api_key');
             if (savedKey) {
                 document.getElementById('apiKeyInput').value = savedKey;
                 log("Loaded saved API Key from phone storage.");
             }
+            
+            // Registering the real sw.js file (Required for Android)
             if ('serviceWorker' in navigator) {
                 navigator.serviceWorker.register('sw.js')
-                    .then(() => log("Service Worker (sw.js) ready."))
-                    .catch(() => {
-                        // Fallback inline registration if sw.js is not present
-                        navigator.serviceWorker.register('data:text/javascript;base64,c2VsZi5hZGRFdmVudListenerCgninstallJywgKCkgPT4gc2VsZi5za2lwV2FpdGluZygpKTs=')
-                            .catch(err => log("SW Note: " + err.message));
-                    });
+                    .then(() => log("Service Worker (sw.js) registered successfully."))
+                    .catch(err => log("SW Reg Error: " + err.message + " (Did you upload sw.js to GitHub?)"));
             }
         };
 
-        // Save API key to localStorage
         function saveApiKey() {
             const key = document.getElementById('apiKeyInput').value.trim();
-            if (!key.startsWith('AIza')) {
-                log("WARNING: Gemini API keys usually start with 'AIza'. Check your key!");
-            }
+            if (!key.startsWith('AIza')) log("WARNING: Gemini API keys usually start with 'AIza'.");
             localStorage.setItem('gemini_api_key', key);
             log("API Key saved to phone storage.");
         }
 
-        // Utility to list all models supported by your API key
+        // Manage file selection between Camera and Upload
+        function updateFileName(input) {
+            const label = document.getElementById('fileLabel');
+            if (input.files.length > 0) {
+                label.innerText = "Selected: " + input.files[0].name;
+                if (input.id === 'cameraFile') document.getElementById('imageFile').value = '';
+                else document.getElementById('cameraFile').value = '';
+            } else {
+                label.innerText = "No image selected";
+            }
+        }
+
         async function checkAvailableModels() {
             const apiKey = document.getElementById('apiKeyInput').value.trim();
-            if (!apiKey) {
-                log("ERROR: Enter your API Key first!");
-                return;
-            }
-            log("Fetching available models from Google...");
+            if (!apiKey) return log("ERROR: Enter your API Key first!");
             try {
                 const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
                 const data = await res.json();
-                if (data.error) {
-                    log("API ERROR: " + data.error.message);
-                    return;
-                }
+                if (data.error) return log("API ERROR: " + data.error.message);
                 const modelNames = data.models
                     .filter(m => m.supportedGenerationMethods && m.supportedGenerationMethods.includes("generateContent"))
                     .map(m => m.name.replace('models/', ''));
                 log("Available models:\n" + modelNames.join(', '));
-            } catch (err) {
-                log("Error checking models: " + err.message);
-            }
+            } catch (err) { log("Error checking models: " + err.message); }
         }
 
-        // Request notification permission from the browser
         async function requestNotificationPermission() {
             log("Requesting notification permission...");
-            if (!("Notification" in window)) {
-                log("ERROR: This browser does not support notifications.");
-                return;
-            }
+            if (!("Notification" in window)) return log("ERROR: This browser does not support notifications.");
             try {
                 const permission = await Notification.requestPermission();
                 log("Permission status: " + permission);
-                if (permission === "granted") {
-                    sendSingleNotification("Test", "Notifications are working!");
-                } else {
-                    log("ERROR: Permission denied.");
-                }
-            } catch (err) {
-                log("ERROR requesting permission: " + err.message);
-            }
+                if (permission === "granted") sendSingleNotification("Test", "Notifications are working!");
+            } catch (err) { log("ERROR requesting permission: " + err.message); }
         }
 
-        // Trigger notification on both Desktop and Android Chrome
         async function sendSingleNotification(title, bodyText) {
             const options = {
                 body: bodyText,
                 icon: 'https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg'
             };
 
+            let swUsed = false;
             try {
                 if ('serviceWorker' in navigator) {
-                    const reg = await navigator.serviceWorker.ready;
+                    // Use getRegistration to prevent hanging if SW failed to install
+                    const reg = await navigator.serviceWorker.getRegistration();
                     if (reg && reg.showNotification) {
                         await reg.showNotification(title, options);
-                        return;
+                        swUsed = true;
                     }
                 }
             } catch (e) {
-                log("SW fallback: " + e.message);
+                log("SW fallback error: " + e.message);
             }
 
-            try {
-                new Notification(title, options);
-            } catch (err) {
-                log("Notification error: " + err.message);
+            // Fallback to standard web notification if SW isn't active
+            if (!swUsed) {
+                try {
+                    new Notification(title, options);
+                } catch (err) {
+                    log("Notification error: " + err.message);
+                }
             }
         }
 
-        // Convert image file to Base64 format
         function fileToBase64(file) {
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -162,7 +165,6 @@
             });
         }
 
-        // Split text into chunks with a maximum of 120 characters
         function splitText(text, maxLength) {
             const chunks = [];
             let i = 0;
@@ -173,7 +175,6 @@
             return chunks;
         }
 
-        // Send notifications with a 3-second delay
         async function triggerNotifications(chunks) {
             for (let i = 0; i < chunks.length; i++) {
                 log(`Sending notification ${i + 1} of ${chunks.length}...`);
@@ -184,23 +185,18 @@
             log("Done sending all notifications.");
         }
 
-        // Send request to Gemini API
         async function sendToGemini() {
             const apiKey = document.getElementById('apiKeyInput').value.trim();
             const selectedModel = document.getElementById('modelSelect').value;
             const promptText = document.getElementById('promptText').value;
-            const fileInput = document.getElementById('imageFile');
             const statusLabel = document.getElementById('status');
+            
+            const cameraInput = document.getElementById('cameraFile');
+            const uploadInput = document.getElementById('imageFile');
+            const activeFileInput = cameraInput.files.length > 0 ? cameraInput : uploadInput;
 
-            if (!apiKey) {
-                log("ERROR: Please enter your API Key first!");
-                return;
-            }
-
-            if (!promptText && fileInput.files.length === 0) {
-                log("ERROR: Please enter text or upload an image!");
-                return;
-            }
+            if (!apiKey) return log("ERROR: Please enter your API Key first!");
+            if (!promptText && activeFileInput.files.length === 0) return log("ERROR: Please enter text or upload an image!");
 
             statusLabel.innerText = "Status: Thinking...";
             log(`Preparing request to ${selectedModel}...`);
@@ -208,14 +204,12 @@
             try {
                 let contents = [{ parts: [] }];
                 
-                if (promptText) {
-                    contents[0].parts.push({ text: promptText });
-                }
+                if (promptText) contents[0].parts.push({ text: promptText });
 
-                if (fileInput.files.length > 0) {
+                if (activeFileInput.files.length > 0) {
                     log("Encoding image to Base64...");
-                    const base64Image = await fileToBase64(fileInput.files[0]);
-                    const mimeType = fileInput.files[0].type;
+                    const base64Image = await fileToBase64(activeFileInput.files[0]);
+                    const mimeType = activeFileInput.files[0].type;
                     contents[0].parts.push({
                         inline_data: { mime_type: mimeType, data: base64Image }
                     });
